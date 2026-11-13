@@ -33,7 +33,7 @@ In daily use since 2026-11-13, replacing a Broadlink RM4C mini.
 
 | Path | What |
 |---|---|
-| `esphome/bedroom-ac-ir.yaml` | Firmware config (ESPHome 2026.10.2, Arduino framework) |
+| `esphome/bedroom-ac-ir.yaml` | Firmware config (ESPHome 2026.10.2, Arduino framework, web server on :80) |
 | `esphome/secrets.example.yaml` | Secrets it expects |
 | `home-assistant/bedroom_ac.yaml` | HA package: helpers, apply/toggle scripts, remote-sync automation |
 | `tools/verify_frames.py` | Proves the C++ frame builder matches the published codes |
@@ -63,6 +63,34 @@ bits are 0. Power is a **toggle**, and state frames don't switch the unit on.
   restart button, status LED, firmware update.
 - **Echo suppression:** the receiver ignores anything within 600 ms of the
   device's own transmission.
+
+## Local web API (works with Home Assistant down)
+
+The firmware runs ESPHome's web server (v3) on port 80, so the IR Mate can be
+controlled directly with no Home Assistant and no extra server. URLs use the
+entity **name**, URL-encoded. POSTs need a body, even an empty one (`-d ""`),
+or the server answers `411`.
+
+| Do | Request |
+|---|---|
+| Web page | `GET http://<device>/` |
+| Set temperature (sends a full state frame) | `POST /number/AC%20temperature/set?value=22` |
+| Set mode | `POST /select/AC%20mode/set?option=cool` (`cool`, `heat`) |
+| Set fan | `POST /select/AC%20fan/set?option=high` (`low`, `med`, `high`, `auto`) |
+| Power toggle (carries current mode/temp/fan, like the remote) | `POST /button/AC%20power%20toggle/press` |
+| Read a setting | `GET /number/AC%20temperature`, `GET /select/AC%20fan` → `{"id":…,"value":…,"state":…}` |
+| Last frame sent / heard | `GET /text_sensor/Last%20sent%20frame`, `GET /text_sensor/Last%20received%20frame` |
+
+Every local command is also reported to HA as `esphome.electra_ir_received`
+(`source: local`), so HA's helpers follow when HA is up. Commands from HA only
+update these local controls and don't fire the event. These local entities are
+`disabled_by_default` in HA, so they don't duplicate the package's helpers.
+
+The device has no idea whether the AC is on: the power button is a toggle.
+HA's "assumed on" helper is the only power state.
+
+Verified 2026-11-13 21:24 UTC: `POST /number/AC%20temperature/set?value=22`
+→ frame cool/22/med sent → HA sync automation ran → no re-send from HA.
 
 ## Voice (Home Assistant Assist)
 

@@ -22,6 +22,13 @@
 #   event esphome.electra_ir_received {toggle, mode, temp, fan, core}
 #     fired for every valid Electra frame the receiver decodes.
 #
+# Local control (works with Home Assistant down): built-in web server on port
+# 80. Page: http://<device>/ . REST: see README ("Local web API"). Commands
+# made there are sent as IR AND reported to HA as event
+# esphome.electra_ir_received with source "local", so HA's helpers follow.
+# Commands from HA (send_frame action) only update the local controls; they
+# fire no event, so a power toggle is never counted twice.
+#
 # Source of truth: https://github.com/danielrosehill/electra-ac-xiao-ir-mate-esphome
 # (esphome/bedroom-ac-ir.yaml). Secrets: see esphome/secrets.example.yaml.
 
@@ -61,6 +68,7 @@ api:
       then:
         - lambda: |-
             id(electra_send)->execute(toggle, mode, temp, fan);
+            id(mirror)->execute(mode, temp, fan);
 
 ota:
   - platform: esphome
@@ -74,6 +82,10 @@ wifi:
     password: "12345678"
 
 captive_portal:
+
+web_server:
+  port: 80
+  version: 3
 
 globals:
   # Echo suppression: our own transmission is heard by our own receiver.
@@ -165,6 +177,7 @@ remote_receiver:
             id(rx_temp) = temp;
             id(rx_core) = bits;
             id(rx_valid) = true;
+            id(mirror)->execute(std::string(modes[mode_v]), temp, std::string(fans[fan_v]));
             return;   // one event per burst (the 3 repeats are identical)
           }
       - if:
@@ -179,8 +192,43 @@ remote_receiver:
                   temp: !lambda 'return std::to_string(id(rx_temp));'
                   fan: !lambda 'return id(rx_fan);'
                   core: !lambda 'return id(rx_core);'
+                  source: ir
 
 script:
+  # Keep the local controls showing the last known settings, without sending.
+  - id: mirror
+    mode: queued
+    parameters:
+      mode: string
+      temp: int
+      fan: string
+    then:
+      - lambda: |-
+          if (mode == "cool" || mode == "heat") id(local_mode).publish_state(mode);
+          if (temp >= 16 && temp <= 30) id(local_temp).publish_state(temp);
+          if (fan == "low" || fan == "med" || fan == "high" || fan == "auto") id(local_fan).publish_state(fan);
+
+  # A command from the local web page / REST API: send it, then tell HA.
+  - id: local_send
+    mode: queued
+    parameters:
+      toggle: bool
+      mode: string
+      temp: int
+      fan: string
+    then:
+      - lambda: |-
+          id(electra_send)->execute(toggle, mode, temp, fan);
+      - homeassistant.event:
+          event: esphome.electra_ir_received
+          data:
+            toggle: !lambda 'return toggle ? "true" : "false";'
+            mode: !lambda 'return mode;'
+            temp: !lambda 'return std::to_string(temp);'
+            fan: !lambda 'return fan;'
+            core: ""
+            source: local
+
   - id: electra_send
     mode: queued
     parameters:
@@ -258,6 +306,65 @@ sensor:
 button:
   - platform: restart
     name: Restart
+  # Local power toggle. Like the handheld remote, the toggle frame carries the
+  # current mode/temp/fan.
+  - platform: template
+    id: local_power
+    name: AC power toggle
+    icon: mdi:power
+    disabled_by_default: true
+    on_press:
+      - lambda: |-
+          id(local_send)->execute(true, id(local_mode).current_option(),
+                                  (int) id(local_temp).state, id(local_fan).current_option());
+
+# Local controls. Disabled by default in HA (HA has its own helpers); shown on
+# the web page. Changing one sends a full state frame (mode+temp+fan).
+number:
+  - platform: template
+    id: local_temp
+    name: AC temperature
+    icon: mdi:thermometer
+    unit_of_measurement: "°C"
+    min_value: 16
+    max_value: 30
+    step: 1
+    optimistic: true
+    restore_value: true
+    initial_value: 22
+    disabled_by_default: true
+    set_action:
+      - lambda: |-
+          id(local_send)->execute(false, id(local_mode).current_option(), (int) x,
+                                  id(local_fan).current_option());
+
+select:
+  - platform: template
+    id: local_mode
+    name: AC mode
+    icon: mdi:thermostat
+    options: [cool, heat]
+    initial_option: cool
+    optimistic: true
+    restore_value: true
+    disabled_by_default: true
+    set_action:
+      - lambda: |-
+          id(local_send)->execute(false, x, (int) id(local_temp).state,
+                                  id(local_fan).current_option());
+  - platform: template
+    id: local_fan
+    name: AC fan
+    icon: mdi:fan
+    options: [low, med, high, auto]
+    initial_option: med
+    optimistic: true
+    restore_value: true
+    disabled_by_default: true
+    set_action:
+      - lambda: |-
+          id(local_send)->execute(false, id(local_mode).current_option(),
+                                  (int) id(local_temp).state, x);
 
 light:
   - platform: esp32_rmt_led_strip
