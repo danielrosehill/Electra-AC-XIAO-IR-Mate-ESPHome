@@ -1,0 +1,275 @@
+# Bedroom AC IR blaster: Seeed XIAO Smart IR Mate (ESP32-C3), custom firmware.
+#
+# Replaces the Broadlink RM4C for the Electra central AC. Instead of storing
+# learned codes it GENERATES the Electra frames on the device, from the protocol
+# reverse-engineered on 2026-07-21 (https://github.com/danielrosehill/electra-central-ac-ir-codes,
+# electra_ir.py), and it DECODES Electra frames it hears (handheld remote or
+# any other blaster) and reports them to Home Assistant.
+#
+# Electra frame (one IR burst):
+#   3 repeats of [mark 3H, space 3H, 34 Manchester bits], then mark 4H, then a
+#   ~109 ms gap. H (half-bit) = 31.7 Broadlink ticks = ~1041 us.
+#   Manchester: bit 0 = mark,space; bit 1 = space,mark.
+#   Core bits: 0 power-toggle flag | 2-3 mode (cool 01, heat 10) |
+#   4-5 fan (low 00, med 01, high 10, auto 11) | 11-14 temp-15 | 32 always 1 |
+#   every other bit 0. No checksum.
+#
+# HA interface:
+#   action esphome.bedroom_ac_ir_send_frame(toggle, mode, temp, fan)
+#     mode "cool"|"heat", temp 16-30, fan "low"|"med"|"high"|"auto".
+#     toggle=true sends the power-toggle frame (the Broadlink capture was
+#     toggle + cool 19 high; pass those to replicate it exactly).
+#   event esphome.electra_ir_received {toggle, mode, temp, fan, core}
+#     fired for every valid Electra frame the receiver decodes.
+#
+# Source of truth: https://github.com/danielrosehill/electra-ac-xiao-ir-mate-esphome
+# (esphome/bedroom-ac-ir.yaml). Secrets: see esphome/secrets.example.yaml.
+
+substitutions:
+  name: bedroom-ac-ir
+  friendly_name: Bedroom AC IR
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  on_boot:
+    priority: -100
+    then:
+      - light.turn_on:
+          id: rgb_light
+          red: 0%
+          green: 0%
+          blue: 30%
+          brightness: 20%
+
+esp32:
+  board: seeed_xiao_esp32c3
+  framework:
+    type: arduino
+
+logger:
+  level: DEBUG
+
+api:
+  actions:
+    - action: send_frame
+      variables:
+        toggle: bool
+        mode: string
+        temp: int
+        fan: string
+      then:
+        - lambda: |-
+            id(electra_send)->execute(toggle, mode, temp, fan);
+
+ota:
+  - platform: esphome
+    password: !secret bedroom_ac_ir_ota_password
+
+wifi:
+  ssid: !secret wifi_iot_ssid
+  password: !secret wifi_iot_password
+  ap:
+    ssid: "Bedroom-AC-IR Fallback"
+    password: "12345678"
+
+captive_portal:
+
+globals:
+  # Echo suppression: our own transmission is heard by our own receiver.
+  - id: last_tx_ms
+    type: uint32_t
+    initial_value: '0'
+  # Last decoded frame, handed from the on_raw lambda to homeassistant.event.
+  - id: rx_valid
+    type: bool
+    initial_value: 'false'
+  - id: rx_toggle
+    type: bool
+    initial_value: 'false'
+  - id: rx_mode
+    type: std::string
+  - id: rx_fan
+    type: std::string
+  - id: rx_temp
+    type: int
+    initial_value: '0'
+  - id: rx_core
+    type: std::string
+
+remote_transmitter:
+  id: ir_tx
+  pin: GPIO3            # D1, the three IR LEDs
+  carrier_duty_percent: 50%
+  non_blocking: false
+
+remote_receiver:
+  id: ir_rx
+  pin:
+    number: GPIO4       # D2, IR receiver
+    inverted: true
+  tolerance: 25%
+  idle: 20ms            # frame is one continuous burst; the gap after it is ~109 ms
+  rmt_symbols: 96
+  on_raw:
+    then:
+      - lambda: |-
+          id(rx_valid) = false;
+          // Ignore what we just sent ourselves.
+          if (millis() - id(last_tx_ms) < 600) return;
+          const float H = 1041.0f;
+          // Durations -> half-bit level stream (1 = mark, 0 = space).
+          std::vector<uint8_t> s;
+          s.reserve(300);
+          for (auto d : x) {
+            int n = (int) lroundf(fabsf((float) d) / H);
+            if (n < 1) n = 1;
+            if (n > 8) n = 8;   // long gaps: cap, they only separate frames
+            for (int k = 0; k < n; k++) s.push_back(d > 0 ? 1 : 0);
+          }
+          // Find a leader (mark 3H, space 3H) followed by 34 valid Manchester bits.
+          for (size_t i = 0; i + 6 + 68 <= s.size(); i++) {
+            if (!(s[i] && s[i+1] && s[i+2] && !s[i+3] && !s[i+4] && !s[i+5])) continue;
+            if (i > 0 && s[i-1] == 1) continue;   // must be the start of the mark
+            uint64_t core = 0;
+            bool ok = true;
+            for (int b = 0; b < 34; b++) {
+              uint8_t a = s[i + 6 + 2*b], c = s[i + 6 + 2*b + 1];
+              int bit;
+              if (a == 1 && c == 0) bit = 0;
+              else if (a == 0 && c == 1) bit = 1;
+              else { ok = false; break; }
+              core = (core << 1) | bit;   // bit 0 ends up as the MSB (bit 33 of core)
+            }
+            if (!ok) continue;
+            auto bitat = [&](int pos) -> int { return (int) ((core >> (33 - pos)) & 1); };
+            // Constant bits: 1 and 6-10 and 15-31 and 33 are 0; 32 is 1.
+            bool consts = bitat(32) == 1 && bitat(33) == 0 && bitat(1) == 0;
+            for (int p = 6; p <= 10 && consts; p++) if (bitat(p)) consts = false;
+            for (int p = 15; p <= 31 && consts; p++) if (bitat(p)) consts = false;
+            if (!consts) continue;
+            int mode_v = bitat(2) * 2 + bitat(3);
+            int fan_v = bitat(4) * 2 + bitat(5);
+            int temp = (bitat(11) * 8 + bitat(12) * 4 + bitat(13) * 2 + bitat(14)) + 15;
+            const char *modes[] = {"?", "cool", "heat", "?"};
+            const char *fans[] = {"low", "med", "high", "auto"};
+            std::string bits;
+            for (int p = 0; p < 34; p++) bits += bitat(p) ? '1' : '0';
+            bool toggle = bitat(0) == 1;
+            ESP_LOGI("electra", "RX %s toggle=%d mode=%s temp=%d fan=%s",
+                     bits.c_str(), toggle, modes[mode_v], temp, fans[fan_v]);
+            id(last_rx_text).publish_state(bits);
+            id(rx_toggle) = toggle;
+            id(rx_mode) = modes[mode_v];
+            id(rx_fan) = fans[fan_v];
+            id(rx_temp) = temp;
+            id(rx_core) = bits;
+            id(rx_valid) = true;
+            return;   // one event per burst (the 3 repeats are identical)
+          }
+      - if:
+          condition:
+            lambda: 'return id(rx_valid);'
+          then:
+            - homeassistant.event:
+                event: esphome.electra_ir_received
+                data:
+                  toggle: !lambda 'return id(rx_toggle) ? "true" : "false";'
+                  mode: !lambda 'return id(rx_mode);'
+                  temp: !lambda 'return std::to_string(id(rx_temp));'
+                  fan: !lambda 'return id(rx_fan);'
+                  core: !lambda 'return id(rx_core);'
+
+script:
+  - id: electra_send
+    mode: queued
+    parameters:
+      toggle: bool
+      mode: string
+      temp: int
+      fan: string
+    then:
+      - lambda: |-
+          int mode_v = (mode == "heat") ? 2 : 1;
+          int fan_v = (fan == "med") ? 1 : (fan == "high") ? 2 : (fan == "auto") ? 3 : 0;
+          if (temp < 16) temp = 16;
+          if (temp > 30) temp = 30;
+          int tv = temp - 15;
+          uint8_t bits[34] = {0};
+          bits[0] = toggle ? 1 : 0;
+          bits[2] = (mode_v >> 1) & 1; bits[3] = mode_v & 1;
+          bits[4] = (fan_v >> 1) & 1;  bits[5] = fan_v & 1;
+          bits[11] = (tv >> 3) & 1; bits[12] = (tv >> 2) & 1;
+          bits[13] = (tv >> 1) & 1; bits[14] = tv & 1;
+          bits[32] = 1;
+          // Half-bit level stream.
+          std::vector<uint8_t> s;
+          for (int r = 0; r < 3; r++) {
+            s.insert(s.end(), {1, 1, 1, 0, 0, 0});
+            for (int b = 0; b < 34; b++) {
+              if (bits[b]) { s.push_back(0); s.push_back(1); }
+              else         { s.push_back(1); s.push_back(0); }
+            }
+          }
+          s.insert(s.end(), {1, 1, 1, 1});
+          // Run-length encode into microseconds (mark +, space -).
+          const float H = 1041.0f;
+          std::vector<int32_t> raw;
+          size_t i = 0;
+          while (i < s.size()) {
+            size_t j = i;
+            while (j < s.size() && s[j] == s[i]) j++;
+            int32_t us = (int32_t) lroundf((j - i) * H);
+            raw.push_back(s[i] ? us : -us);
+            i = j;
+          }
+          raw.push_back(-109000);   // lead-out gap
+          std::string bstr;
+          for (int p = 0; p < 34; p++) bstr += bits[p] ? '1' : '0';
+          ESP_LOGI("electra", "TX %s toggle=%d mode=%s temp=%d fan=%s (%d durations)",
+                   bstr.c_str(), toggle, mode.c_str(), temp, fan.c_str(), (int) raw.size());
+          id(last_tx_text).publish_state(bstr);
+          id(last_tx_ms) = millis();
+          auto call = id(ir_tx).transmit();
+          auto *data = call.get_data();
+          data->set_carrier_frequency(38000);
+          data->set_data(raw);
+          call.perform();
+          id(last_tx_ms) = millis();
+
+text_sensor:
+  - platform: template
+    id: last_rx_text
+    name: Last received frame
+    icon: mdi:remote
+  - platform: template
+    id: last_tx_text
+    name: Last sent frame
+    icon: mdi:remote-tv
+  - platform: wifi_info
+    ip_address:
+      name: IP address
+
+sensor:
+  - platform: wifi_signal
+    name: WiFi signal
+    update_interval: 60s
+
+button:
+  - platform: restart
+    name: Restart
+
+light:
+  - platform: esp32_rmt_led_strip
+    id: rgb_light
+    name: Status LED
+    pin: GPIO7          # D5
+    num_leds: 1
+    chipset: WS2812
+    rgb_order: GRB
+    rmt_symbols: 48
+
+output:
+  - platform: gpio
+    id: vibration_motor
+    pin: GPIO6          # D4
