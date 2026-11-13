@@ -39,12 +39,12 @@ input_select:
   bedroom_ac_mode:
     name: House AC Mode
     options: [cool, heat]
-    initial: cool
+    # No `initial:` - it would reset the helper on every restart and desync it
+    # from the unit (removed 2026-11-13). The helper restores its last state.
     icon: mdi:thermostat
   bedroom_ac_fan:
     name: House AC Fan
     options: [low, med, high, auto]
-    initial: high
     icon: mdi:fan
 
 input_number:
@@ -90,6 +90,66 @@ script:
             sequence:
               - delay: {seconds: 1}
               - action: script.bedroom_ac_apply_state
+
+# Standard climate entity for the thermostat card and Assist's built-in climate
+# intents. Needs the HACS integration "Climate Template"
+# (jcwillox/hass-template-climate, domain climate_template, v1.4.2) and a restart
+# the first time. It is only a view over the helpers above: every set_* writes a
+# helper (or runs the power toggle), and the existing automations send the IR.
+climate:
+  - platform: climate_template
+    name: House AC
+    unique_id: house_ac_climate
+    icon_template: mdi:air-conditioner
+    modes: ["off", "cool", "heat"]
+    fan_modes: ["low", "medium", "high", "auto"]
+    min_temp: 16
+    max_temp: 30
+    temp_step: 1
+    precision: 0.1   # display of current temp; setpoints still step 1
+    # Whichever room the comfort thermostat is watching.
+    current_temperature_template: "{{ states('sensor.comfort_thermostat_room_temperature') }}"
+    target_temperature_template: "{{ states('input_number.bedroom_ac_temp') | int(22) }}"
+    hvac_mode_template: >-
+      {{ states('input_select.bedroom_ac_mode') if is_state('input_boolean.bedroom_ac_on', 'on') else 'off' }}
+    fan_mode_template: >-
+      {{ {'med': 'medium'}.get(states('input_select.bedroom_ac_fan'), states('input_select.bedroom_ac_fan')) }}
+    set_temperature:
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.bedroom_ac_temp
+        data:
+          value: "{{ temperature | round(0) | int }}"
+    set_fan_mode:
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.bedroom_ac_fan
+        data:
+          option: "{{ {'medium': 'med'}.get(fan_mode, fan_mode) }}"
+    set_hvac_mode:
+      - choose:
+          - conditions: "{{ hvac_mode == 'off' }}"
+            sequence:
+              - if:
+                  - condition: state
+                    entity_id: input_boolean.bedroom_ac_on
+                    state: "on"
+                then:
+                  - action: script.bedroom_ac_power_toggle
+        default:
+          # cool/heat: set the mode; if the AC is off, power it on (the toggle
+          # script applies the full state a second later).
+          - action: input_select.select_option
+            target:
+              entity_id: input_select.bedroom_ac_mode
+            data:
+              option: "{{ hvac_mode }}"
+          - if:
+              - condition: state
+                entity_id: input_boolean.bedroom_ac_on
+                state: "off"
+            then:
+              - action: script.bedroom_ac_power_toggle
 
 template:
   - switch:

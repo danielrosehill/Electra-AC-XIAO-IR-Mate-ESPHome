@@ -48,6 +48,30 @@ flag; 2-3 mode (cool `01`, heat `10`); 4-5 fan (low `00`, med `01`, high
 `10`, auto `11`); 11-14 = °C − 15 (16-30 °C); bit 32 is always 1; all other
 bits are 0. Power is a **toggle**, and state frames don't switch the unit on.
 
+## Climate entity and thermostat card
+
+`home-assistant/bedroom_ac.yaml` also defines **`climate.house_ac`**, a standard
+climate entity, so the built-in **thermostat card** works: target temperature,
+off/cool/heat (off = power) and fan low/medium/high/auto in one card. It needs
+the HACS integration **Climate Template**
+([jcwillox/hass-template-climate](https://github.com/jcwillox/hass-template-climate),
+v1.4.2, not in the HACS default list: add it as a custom repository), then
+one HA restart. The entity is only a view over the helpers: every change writes
+a helper or runs the power toggle, and the existing automations send the IR.
+"Current temperature" is the comfort-thermostat reference sensor. Point
+`current_temperature_template` at any room sensor you like.
+
+```yaml
+type: thermostat
+entity: climate.house_ac
+features:
+  - {type: climate-hvac-modes, style: icons, hvac_modes: ["off", cool, heat]}
+  - {type: climate-fan-modes, style: icons, fan_modes: [low, medium, high, auto]}
+```
+
+As of HA 2026.11, Climate Template 1.4.2 logs deprecation warnings
+(`_attr_target_temperature` etc., removal in 2027.11). They are harmless for now.
+
 ## Home Assistant interface
 
 - **Send:** action `esphome.bedroom_ac_ir_send_frame` with
