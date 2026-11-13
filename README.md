@@ -27,7 +27,7 @@ In daily use since 2026-11-13, replacing a Broadlink RM4C mini.
 | Transmit: `cool 19 high` sent from the IR Mate | AC accepted it (beep) |
 | Receive: handheld remote set to `cool 19 med` | decoded as `0001010000001000000000000000000010` → cool / 19 / med |
 | Sync gate: helper change while `bedroom_ac_ir_syncing` is on | no frame sent |
-| Remote press → event → helpers updated, end to end | not yet observed |
+| Remote press → event → helpers updated, end to end | handheld set to cool/22/med → helper 19 → 22, nothing re-sent |
 
 ## Files
 
@@ -95,7 +95,9 @@ LED GPIO7 (D5), vibration motor GPIO6 (D4).
 
 - The Electra unit has no display. HA's power state is *assumed*, and the
   remote sync is what keeps it honest. If someone presses the remote out of
-  the IR Mate's line of sight, HA misses that change.
+  the IR Mate's line of sight, HA misses that change. In testing, a press
+  aimed only at the AC was missed, so put the IR Mate near the AC's IR
+  receiver, where it overhears whatever the AC hears.
 - A state frame always carries mode, temp **and** fan together, so changing
   one re-asserts the other two from HA's helpers.
 - Only cool and heat are implemented. Fan-only and dry exist on some Electra
