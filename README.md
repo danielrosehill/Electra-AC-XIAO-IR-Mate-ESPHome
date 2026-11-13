@@ -64,6 +64,20 @@ bits are 0. Power is a **toggle**, and state frames don't switch the unit on.
 - **Echo suppression:** the receiver ignores anything within 600 ms of the
   device's own transmission.
 
+## Voice (Home Assistant Assist)
+
+- **Power:** `switch.house_ac`, a template switch with aliases (AC, Air
+  conditioner, Aircon, Central AC). It toggles only when the assumed state
+  differs, so "turn on the AC" when it is already on sends nothing. Don't
+  expose `input_boolean.bedroom_ac_on` instead: switching it changes only
+  HA's assumption, and no IR is sent.
+- **Temperature, fan, mode:** Assist has no built-in intents for helpers, so
+  automation `house_ac_voice` adds sentences such as "set the AC to 22", "make
+  the AC warmer/cooler", "turn up/down the AC fan", "AC fan high", and
+  "switch the AC to heating". Tested with `POST /api/conversation/process`.
+- Watch for other exposed entities named "AC". Assist answers "multiple
+  devices called AC" and won't act.
+
 ## Setup from a new IR Mate
 
 1. **WiFi.** Out of the box it broadcasts `xiao-smart-ir-mate-XXXXXX`

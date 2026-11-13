@@ -1,4 +1,4 @@
-# Bedroom AC: Electra central unit, IR via the XIAO Smart IR Mate running
+# House AC: Electra central (ducted) unit, IR via the XIAO Smart IR Mate running
 # custom ESPHome firmware (device name "bedroom-ac-ir").
 # Source of truth: https://github.com/danielrosehill/electra-ac-xiao-ir-mate-esphome
 # Install: copy to /config/packages/ (needs `homeassistant: packages:` enabled).
@@ -14,31 +14,42 @@
 # event esphome.electra_ir_received {toggle, mode, temp, fan, core}, and
 # bedroom_ac_sync_from_remote copies it into the helpers WITHOUT re-sending
 # (input_boolean.bedroom_ac_ir_syncing blocks bedroom_ac_apply_on_change).
+#
+# Entity ids keep their original "bedroom_ac" prefix (dashboards, the comfort
+# thermostat and scripts reference them); the unit is the whole-house central AC,
+# so friendly names say "House AC".
+#
+# Voice (HA Assist): switch.house_ac does real on/off (it only toggles when the
+# assumed state differs). Exposing input_boolean.bedroom_ac_on instead would be
+# wrong: switching it only changes HA's assumption, no IR is sent. Assist has no
+# built-in intents for input_number/input_select helpers, so temperature, fan
+# and mode are custom sentences (automation house_ac_voice). Set aliases and
+# exposure on switch.house_ac in the UI (Settings > Voice assistants > Expose).
 
 input_boolean:
   bedroom_ac_on:
-    name: Bedroom AC (assumed on)
+    name: House AC (assumed on)
     icon: mdi:air-conditioner
   bedroom_ac_ir_syncing:
-    name: Bedroom AC syncing from remote
+    name: House AC syncing from remote
     icon: mdi:remote
     initial: false   # never restore a stuck "on": it would block every AC change
 
 input_select:
   bedroom_ac_mode:
-    name: Bedroom AC Mode
+    name: House AC Mode
     options: [cool, heat]
     initial: cool
     icon: mdi:thermostat
   bedroom_ac_fan:
-    name: Bedroom AC Fan
+    name: House AC Fan
     options: [low, med, high, auto]
     initial: high
     icon: mdi:fan
 
 input_number:
   bedroom_ac_temp:
-    name: Bedroom AC Temperature
+    name: House AC Temperature
     min: 16
     max: 30
     step: 1
@@ -47,7 +58,7 @@ input_number:
 
 script:
   bedroom_ac_apply_state:
-    alias: Bedroom AC — Apply State
+    alias: House AC — Apply State
     icon: mdi:air-conditioner
     sequence:
       - action: esphome.bedroom_ac_ir_send_frame
@@ -58,7 +69,7 @@ script:
           fan: "{{ states('input_select.bedroom_ac_fan') }}"
 
   bedroom_ac_power_toggle:
-    alias: Bedroom AC — Power Toggle
+    alias: House AC — Power Toggle
     icon: mdi:power
     sequence:
       # Same frame as the original Broadlink capture: toggle flag + cool 19 high.
@@ -80,8 +91,29 @@ script:
               - delay: {seconds: 1}
               - action: script.bedroom_ac_apply_state
 
+template:
+  - switch:
+      - name: House AC
+        unique_id: house_ac_power
+        icon: mdi:air-conditioner
+        state: "{{ is_state('input_boolean.bedroom_ac_on', 'on') }}"
+        turn_on:
+          - if:
+              - condition: state
+                entity_id: input_boolean.bedroom_ac_on
+                state: "off"
+            then:
+              - action: script.bedroom_ac_power_toggle
+        turn_off:
+          - if:
+              - condition: state
+                entity_id: input_boolean.bedroom_ac_on
+                state: "on"
+            then:
+              - action: script.bedroom_ac_power_toggle
+
 automation:
-  - alias: Bedroom AC — apply on setting change
+  - alias: House AC — apply on setting change
     id: bedroom_ac_apply_on_change
     trigger:
       - platform: state
@@ -89,6 +121,10 @@ automation:
           - input_number.bedroom_ac_temp
           - input_select.bedroom_ac_mode
           - input_select.bedroom_ac_fan
+        # `to: null` = real value changes only. Without it, attribute-only
+        # changes (a reload that renames a helper) re-sent the frame
+        # (seen 2026-11-13 21:19:50 UTC).
+        to: ~
     condition:
       - condition: state
         entity_id: input_boolean.bedroom_ac_on
@@ -100,7 +136,7 @@ automation:
     action:
       - service: script.bedroom_ac_apply_state
 
-  - alias: Bedroom AC — sync helpers from handheld remote
+  - alias: House AC — sync helpers from handheld remote
     id: bedroom_ac_sync_from_remote
     description: >-
       The IR Mate decoded an Electra frame (handheld remote or another blaster).
@@ -146,3 +182,111 @@ automation:
       - action: input_boolean.turn_off
         target:
           entity_id: input_boolean.bedroom_ac_ir_syncing
+
+  - alias: House AC — voice commands
+    id: house_ac_voice
+    description: >-
+      Assist sentences for temperature, fan and mode. They set the helpers;
+      bedroom_ac_apply_on_change sends the frame when the AC is on. Power
+      on/off is switch.house_ac (built-in turn on/off intents).
+    mode: queued
+    triggers:
+      - trigger: conversation
+        id: set
+        command:
+          - "set [the] (AC|A C|aircon|air conditioner|air conditioning) to {value} [degrees]"
+          - "(AC|A C|aircon|air conditioner|air conditioning) to {value} [degrees]"
+          - "switch [the] (AC|A C|aircon|air conditioner|air conditioning) to {value} [mode]"
+      - trigger: conversation
+        id: warmer
+        command:
+          - "[make] [the] (AC|A C|aircon|air conditioner|air conditioning) (warmer|hotter)"
+          - "turn up [the] (AC|A C|aircon|air conditioner|air conditioning) [temperature]"
+          - "raise [the] (AC|A C|aircon|air conditioner|air conditioning) [temperature]"
+      - trigger: conversation
+        id: cooler
+        command:
+          - "[make] [the] (AC|A C|aircon|air conditioner|air conditioning) (cooler|colder)"
+          - "turn down [the] (AC|A C|aircon|air conditioner|air conditioning) [temperature]"
+          - "lower [the] (AC|A C|aircon|air conditioner|air conditioning) [temperature]"
+      - trigger: conversation
+        id: fan_set
+        command:
+          - "[set|turn] [the] (AC|A C|aircon|air conditioner|air conditioning) fan [speed] to {speed}"
+          - "(AC|A C|aircon|air conditioner|air conditioning) fan {speed}"
+      - trigger: conversation
+        id: fan_up
+        command:
+          - "(turn up|increase|raise) [the] (AC|A C|aircon|air conditioner|air conditioning) fan"
+          - "more (AC|A C|aircon|air conditioner|air conditioning) fan"
+      - trigger: conversation
+        id: fan_down
+        command:
+          - "(turn down|decrease|lower) [the] (AC|A C|aircon|air conditioner|air conditioning) fan"
+          - "less (AC|A C|aircon|air conditioner|air conditioning) fan"
+    actions:
+      - variables:
+          temp_now: "{{ states('input_number.bedroom_ac_temp') | int(22) }}"
+          fan_now: "{{ states('input_select.bedroom_ac_fan') }}"
+          ac_on: "{{ is_state('input_boolean.bedroom_ac_on', 'on') }}"
+          raw: "{{ (trigger.slots.value | default('') | string | lower | replace('°', '') | replace('degrees', '') | trim) }}"
+          speed_raw: "{{ trigger.slots.speed | default('') | string | lower | trim }}"
+          fan_words:
+            low: low
+            slow: low
+            medium: med
+            med: med
+            middle: med
+            high: high
+            fast: high
+            max: high
+            auto: auto
+            automatic: auto
+          mode_words:
+            cool: cool
+            cooling: cool
+            cold: cool
+            heat: heat
+            heating: heat
+            warm: heat
+          new_temp: >-
+            {% if trigger.id == 'warmer' %}{{ [temp_now + 1, 30] | min }}
+            {% elif trigger.id == 'cooler' %}{{ [temp_now - 1, 16] | max }}
+            {% elif trigger.id == 'set' and raw | regex_match('^\\d+(\\.\\d+)?$') %}{{ [[raw | float | round(0) | int, 16] | max, 30] | min }}
+            {% else %}none{% endif %}
+          new_mode: "{{ mode_words.get(raw, 'none') if trigger.id == 'set' else 'none' }}"
+          new_fan: >-
+            {% set up = {'low': 'med', 'med': 'high', 'high': 'high', 'auto': 'high'} %}
+            {% set down = {'high': 'med', 'med': 'low', 'low': 'low', 'auto': 'med'} %}
+            {% if trigger.id == 'fan_up' %}{{ up.get(fan_now, 'med') }}
+            {% elif trigger.id == 'fan_down' %}{{ down.get(fan_now, 'med') }}
+            {% elif trigger.id == 'fan_set' %}{{ fan_words.get(speed_raw, 'none') }}
+            {% else %}none{% endif %}
+          off_note: "{{ '' if ac_on else ' The AC is off, so this applies when it is next turned on.' }}"
+      - choose:
+          - conditions: "{{ new_temp != 'none' }}"
+            sequence:
+              - action: input_number.set_value
+                target:
+                  entity_id: input_number.bedroom_ac_temp
+                data:
+                  value: "{{ new_temp | int }}"
+              - set_conversation_response: "AC set to {{ new_temp | int }} degrees.{{ off_note }}"
+          - conditions: "{{ new_mode != 'none' }}"
+            sequence:
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.bedroom_ac_mode
+                data:
+                  option: "{{ new_mode }}"
+              - set_conversation_response: "AC set to {{ 'cooling' if new_mode == 'cool' else 'heating' }}.{{ off_note }}"
+          - conditions: "{{ new_fan != 'none' }}"
+            sequence:
+              - action: input_select.select_option
+                target:
+                  entity_id: input_select.bedroom_ac_fan
+                data:
+                  option: "{{ new_fan }}"
+              - set_conversation_response: "AC fan {{ {'med': 'medium'}.get(new_fan, new_fan) }}.{{ off_note }}"
+        default:
+          - set_conversation_response: "Sorry, I can set the AC to 16 to 30 degrees, cooling or heating, and the fan to low, medium, high or auto."
