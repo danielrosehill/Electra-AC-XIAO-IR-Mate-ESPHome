@@ -36,6 +36,7 @@ In daily use since 2026-11-13, replacing a Broadlink RM4C mini.
 | `esphome/bedroom-ac-ir.yaml` | Firmware config (ESPHome 2026.10.2, Arduino framework, web server on :80) |
 | `esphome/secrets.example.yaml` | Secrets it expects |
 | `home-assistant/bedroom_ac.yaml` | HA package: helpers, apply/toggle scripts, remote-sync automation |
+| `tools/flash.sh` | Build + flash over WiFi with the ESPHome Docker image (`tools/flash.sh <device-ip>`) |
 | `tools/verify_frames.py` | Proves the C++ frame builder matches the published codes |
 
 ## Protocol in one paragraph
@@ -106,32 +107,118 @@ Verified 2026-11-13 21:24 UTC: `POST /number/AC%20temperature/set?value=22`
 - Watch for other exposed entities named "AC". Assist answers "multiple
   devices called AC" and won't act.
 
-## Setup from a new IR Mate
+## Flashing tutorial: from a new IR Mate to this firmware
 
-1. **WiFi.** Out of the box it broadcasts `xiao-smart-ir-mate-XXXXXX`
-   (password `12345678`). Join it, open `http://192.168.4.1`, and save your
-   2.4 GHz network. Or skip the browser:
-   `curl -G --data-urlencode ssid=... --data-urlencode psk=... http://192.168.4.1/wifisave`
-   (HTTP 302 means it was saved).
-2. **Flash this firmware over the air.** Put `bedroom-ac-ir.yaml` and your
-   `secrets.yaml` in an ESPHome config dir. The first OTA must use Seeed's stock
-   OTA password (see `secrets.example.yaml`). With Docker:
-   ```bash
-   docker run --rm --network host -v "$PWD":/config ghcr.io/esphome/esphome:2026.10.2 \
-     run bedroom-ac-ir.yaml --device <ip>
-   ```
-   The ESPHome Device Builder add-on works too: drop the file into `/config/esphome/`.
-3. **Add to Home Assistant.** Use Settings → Devices → Add integration →
-   ESPHome, with the device's IP and port 6053. Then open the entry's
-   **Configure** and enable **"Allow the device to perform Home Assistant
-   actions"**. It is enabled on the reference install. Whether the
-   `homeassistant.event` calls need it hasn't been tested, so enable it to be
-   safe.
-4. **Install the package:** copy `home-assistant/bedroom_ac.yaml` to
-   `/config/packages/`, run `ha core check`, then reload all YAML.
+You need the IR Mate on USB-C power, a computer with Docker on the same
+network, and a clone of this repo. No cable to the computer is needed:
+everything goes over WiFi.
+
+### 1. Get the stock device onto your WiFi
+
+Out of the box the IR Mate runs Seeed's own ESPHome firmware and broadcasts a
+setup hotspot, `xiao-smart-ir-mate-XXXXXX` (password `12345678`; the LED
+blinks white).
+
+- Join that hotspot from a phone or laptop. If the captive portal doesn't
+  pop up, browse to `http://192.168.4.1`.
+- Pick your **2.4 GHz** network and enter its password. The LED turns solid
+  white once the device has joined.
+- No browser? This does the same thing:
+  ```bash
+  curl -G --data-urlencode "ssid=YOUR_SSID" --data-urlencode "psk=YOUR_PASSWORD" \
+    http://192.168.4.1/wifisave        # HTTP 302 = saved
+  ```
+
+### 2. Find its IP address
+
+Look in your router's DHCP client list for `xiao-smart-ir-mate-XXXXXX`. A
+DHCP reservation is worth adding now, so the address never moves. After this
+firmware is flashed, the hostname becomes `bedroom-ac-ir`.
+
+### 3. Fill in the secrets
+
+```bash
+cp esphome/secrets.example.yaml esphome/secrets.yaml
+$EDITOR esphome/secrets.yaml      # your WiFi SSID + password
+```
+
+Leave `bedroom_ac_ir_ota_password` at the stock value for the first flash.
+The stock firmware only accepts an upload signed with Seeed's published
+password. `secrets.yaml` is gitignored.
+
+### 4. Build and flash over WiFi
+
+```bash
+tools/flash.sh 192.0.2.10          # your device's IP
+tools/flash.sh 192.0.2.10 --logs   # same, then follow the device log
+```
+
+`tools/flash.sh` runs the official ESPHome Docker image
+(`ghcr.io/esphome/esphome`, pinned to the version this config was tested on;
+override it with `ESPHOME_VERSION=...`). It compiles and uploads over the air.
+The first build downloads the ESP-IDF toolchain into `esphome/.esphome/`
+(about 1 GB, 10-20 minutes). After that, a rebuild plus upload takes a minute
+or two, and the upload itself about 5 seconds. Use the same command for every
+later update.
+
+Prefer Home Assistant's **ESPHome Device Builder** add-on? Put
+`bedroom-ac-ir.yaml` in `/config/esphome/`, add the secrets to its
+`secrets.yaml`, and press Install → Wirelessly.
+
+If the new firmware can't join your WiFi, it opens a fallback hotspot,
+`Bedroom-AC-IR Fallback` (password `12345678`), where you can re-enter the
+credentials.
+
+### 5. Check it
+
+Open `http://<device-ip>/`. You should see the AC controls, the WiFi signal
+and the last sent/received frames. Change the temperature by one degree and
+the AC should beep. That's the whole test: Electra central units have no
+display.
+
+### 6. (Optional) Add it to Home Assistant
+
+1. Settings → Devices & services → Add integration → **ESPHome**, with the
+   device's IP and port 6053.
+2. Open the entry's **Configure** and enable **"Allow the device to perform
+   Home Assistant actions"**. It is enabled on the reference install; whether
+   the `homeassistant.event` calls need it hasn't been tested.
+3. Copy `home-assistant/bedroom_ac.yaml` to `/config/packages/` (needs
+   `homeassistant: packages: !include_dir_named packages`), run
+   `ha core check`, then reload all YAML.
 
 Pins (XIAO ESP32-C3): IR TX GPIO3 (D1), IR RX GPIO4 (D2, inverted), WS2812
 LED GPIO7 (D5), vibration motor GPIO6 (D4).
+
+## Using it without Home Assistant
+
+Home Assistant is optional. The IR Mate serves its own web page and a small
+REST API (the "Local web API" table above) straight over WiFi, so anything
+that can make an HTTP request can drive the AC:
+
+- **A browser or phone:** bookmark `http://<device-ip>/` (add it to your
+  phone's home screen) and use it as a remote.
+- **Shell:** a two-line function does it:
+  ```bash
+  ac() { curl -s -X POST -d "" "http://<device-ip>/$1"; }
+  ac "number/AC%20temperature/set?value=23"
+  ac "select/AC%20fan/set?option=high"
+  ac "button/AC%20power%20toggle/press"
+  ```
+- **Schedules:** a cron job on any always-on machine, e.g. `0 22 * * *` set
+  the temperature to 21 at night.
+- **Other automation tools:** Node-RED, n8n, iOS Shortcuts / Android HTTP
+  Shortcuts, a voice assistant webhook. Anything with an "HTTP request" step.
+
+Things to know:
+
+- The API is **unauthenticated** and plain HTTP. Keep the device on a trusted
+  LAN or VLAN. To require a login, add `auth: {username: ..., password: ...}`
+  under `web_server:` in the YAML and re-flash.
+- Power is a **toggle**, and the device doesn't know whether the AC is on.
+  Without HA, you (or your script) are the source of truth for on/off.
+- If Home Assistant is also running, local commands are reported to it, and
+  its helpers follow.
 
 ## Caveats
 

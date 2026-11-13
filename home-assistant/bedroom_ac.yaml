@@ -1,6 +1,6 @@
 # House AC: Electra central (ducted) unit, IR via the XIAO Smart IR Mate running
 # custom ESPHome firmware (device name "bedroom-ac-ir").
-# Source of truth: https://github.com/danielrosehill/electra-ac-xiao-ir-mate-esphome
+# Source of truth: https://github.com/danielrosehill/Electra-AC-XIAO-IR-Mate-ESPHome
 # Install: copy to /config/packages/ (needs `homeassistant: packages:` enabled).
 #
 # Protocol reverse-engineered 2026-07-21 (Manchester, 34-bit core, no checksum).

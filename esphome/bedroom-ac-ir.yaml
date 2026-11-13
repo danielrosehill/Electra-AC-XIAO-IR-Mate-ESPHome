@@ -29,7 +29,7 @@
 # Commands from HA (send_frame action) only update the local controls; they
 # fire no event, so a power toggle is never counted twice.
 #
-# Source of truth: https://github.com/danielrosehill/electra-ac-xiao-ir-mate-esphome
+# Source of truth: https://github.com/danielrosehill/Electra-AC-XIAO-IR-Mate-ESPHome
 # (esphome/bedroom-ac-ir.yaml). Secrets: see esphome/secrets.example.yaml.
 
 substitutions:
