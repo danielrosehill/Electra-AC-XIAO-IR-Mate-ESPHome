@@ -91,15 +91,20 @@ script:
               - delay: {seconds: 1}
               - action: script.bedroom_ac_apply_state
 
-  house_ac_full_cold:
-    alias: House AC — Full Cold!
-    icon: mdi:snowflake-alert
+  # One-press presets (HVAC dashboard buttons). Each turns the comfort
+  # thermostat off so it cannot override the manual setting.
+  house_ac_preset:
+    alias: House AC — Apply Preset
+    icon: mdi:tune-variant
     description: >-
-      One-press max cooling: cool, 20 °C, fan high, AC on. Turns the comfort
-      thermostat off so it does not override the setpoint. Sends ONE state frame
-      (helpers are written with bedroom_ac_ir_syncing on so the apply-on-change
-      automation does not fire three times).
-    mode: single
+      Set mode/temp/fan and make sure the AC is on, sending ONE state frame:
+      helpers are written with bedroom_ac_ir_syncing on so
+      bedroom_ac_apply_on_change does not fire once per helper.
+    mode: queued
+    fields:
+      mode: {description: "cool or heat", example: cool}
+      temp: {description: "16-30", example: 20}
+      fan: {description: "low, med, high or auto", example: high}
     sequence:
       - action: input_boolean.turn_off
         target:
@@ -111,17 +116,17 @@ script:
         target:
           entity_id: input_select.bedroom_ac_mode
         data:
-          option: cool
+          option: "{{ mode }}"
       - action: input_select.select_option
         target:
           entity_id: input_select.bedroom_ac_fan
         data:
-          option: high
+          option: "{{ fan }}"
       - action: input_number.set_value
         target:
           entity_id: input_number.bedroom_ac_temp
         data:
-          value: 20
+          value: "{{ temp | int }}"
       - action: input_boolean.turn_off
         target:
           entity_id: input_boolean.bedroom_ac_ir_syncing
@@ -134,6 +139,47 @@ script:
           - action: script.bedroom_ac_power_toggle
         else:
           - action: script.bedroom_ac_apply_state
+
+  house_ac_full_cold:
+    alias: House AC — Full Cold!
+    icon: mdi:snowflake-alert
+    mode: single
+    sequence:
+      - action: script.house_ac_preset
+        data: {mode: cool, temp: 20, fan: high}
+
+  house_ac_white_noise:
+    alias: House AC — White Noise
+    icon: mdi:waveform
+    description: Cool 22 °C, fan medium — mostly for the fan sound, holding temperature.
+    mode: single
+    sequence:
+      - action: script.house_ac_preset
+        data: {mode: cool, temp: 22, fan: med}
+
+  house_ac_heat:
+    alias: House AC — Heat
+    icon: mdi:fire
+    mode: single
+    sequence:
+      - action: script.house_ac_preset
+        data: {mode: heat, temp: 23, fan: med}
+
+  house_ac_off:
+    alias: House AC — Off
+    icon: mdi:power-off
+    description: Power the AC off (toggle only if assumed on) and stop the comfort thermostat from turning it back on.
+    mode: single
+    sequence:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.climate_manager
+      - if:
+          - condition: state
+            entity_id: input_boolean.bedroom_ac_on
+            state: "on"
+        then:
+          - action: script.bedroom_ac_power_toggle
 
 # Standard climate entity for the thermostat card and Assist's built-in climate
 # intents. Needs the HACS integration "Climate Template"
