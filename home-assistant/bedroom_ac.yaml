@@ -91,6 +91,50 @@ script:
               - delay: {seconds: 1}
               - action: script.bedroom_ac_apply_state
 
+  house_ac_full_cold:
+    alias: House AC — Full Cold!
+    icon: mdi:snowflake-alert
+    description: >-
+      One-press max cooling: cool, 20 °C, fan high, AC on. Turns the comfort
+      thermostat off so it does not override the setpoint. Sends ONE state frame
+      (helpers are written with bedroom_ac_ir_syncing on so the apply-on-change
+      automation does not fire three times).
+    mode: single
+    sequence:
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.climate_manager
+      - action: input_boolean.turn_on
+        target:
+          entity_id: input_boolean.bedroom_ac_ir_syncing
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.bedroom_ac_mode
+        data:
+          option: cool
+      - action: input_select.select_option
+        target:
+          entity_id: input_select.bedroom_ac_fan
+        data:
+          option: high
+      - action: input_number.set_value
+        target:
+          entity_id: input_number.bedroom_ac_temp
+        data:
+          value: 20
+      - action: input_boolean.turn_off
+        target:
+          entity_id: input_boolean.bedroom_ac_ir_syncing
+      - if:
+          - condition: state
+            entity_id: input_boolean.bedroom_ac_on
+            state: "off"
+        then:
+          # Toggle powers on, then applies the state a second later.
+          - action: script.bedroom_ac_power_toggle
+        else:
+          - action: script.bedroom_ac_apply_state
+
 # Standard climate entity for the thermostat card and Assist's built-in climate
 # intents. Needs the HACS integration "Climate Template"
 # (jcwillox/hass-template-climate, domain climate_template, v1.4.2) and a restart
